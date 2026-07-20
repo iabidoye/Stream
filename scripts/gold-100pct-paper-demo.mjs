@@ -17,6 +17,7 @@ const POLL_MS = 5_000
 const DECISION_SETTLE_MS = 2 * 60 * 1000
 const INSTRUMENT = { symbol: 'XAU_USD', label: 'Gold', priceDp: 3 }
 const TAG = 'GOLD_100_PAPER'
+const ASIAN_STRATEGY_ID = 'ASIA_0000_0100_B_SL60_TP6_R20'
 
 const STRATEGIES = [
   {
@@ -37,7 +38,7 @@ const STRATEGIES = [
     bounce: false,
   },
   {
-    id: 'ASIA_0000_0100_B_SL60_TP6_R20',
+    id: ASIAN_STRATEGY_ID,
     label: 'Asian UTC 00:00->01:00',
     timeZone: 'UTC',
     setup: 'breakout',
@@ -52,6 +53,8 @@ const STRATEGIES = [
     h4: 'none',
     dxy: 'notBlock',
     bounce: false,
+    liveOverlapRiskPct: 0.20,
+    allowLiveGoldOverlap: true,
   },
   {
     id: 'LONDON_1000_1130_M_SL60_TP8_R8',
@@ -91,7 +94,7 @@ const STRATEGIES = [
 
 const LIVE_STRATEGY_IDS = new Set([
   'UTC_1200_1330_B_SL60_TP12_R15',
-  'ASIA_0000_0100_B_SL60_TP6_R20',
+  ASIAN_STRATEGY_ID,
   'LONDON_1000_1130_M_SL60_TP8_R8',
   'NY_0800_0930_B_SL60_TP12_R20',
 ])
@@ -270,14 +273,31 @@ async function fetchOpenTrades() {
   return data.trades ?? []
 }
 
-function hasLiveExposure({ pendingOrders, openTrades }) {
-  if (ACCOUNT_PROFILE !== 'live') return false
-  const pendingGold = pendingOrders.some((order) => order.instrument === INSTRUMENT.symbol)
-  const openGold = openTrades.some((trade) => trade.instrument === INSTRUMENT.symbol && Number(trade.currentUnits) !== 0)
-  return pendingGold || openGold
+function hasOpenLiveGold(openTrades) {
+  return ACCOUNT_PROFILE === 'live' && openTrades.some((trade) => (
+    trade.instrument === INSTRUMENT.symbol && Number(trade.currentUnits) !== 0
+  ))
 }
 
-async function placeLimitOrder({ strategy, direction, units, entry, stop, target, gtdTime, clientId }) {
+function strategyRiskPct(strategy, openTrades) {
+  if (canOverlapLiveGold(strategy) && hasOpenLiveGold(openTrades) && Number.isFinite(strategy.liveOverlapRiskPct)) {
+    return strategy.liveOverlapRiskPct
+  }
+  return RISK_PCT
+}
+
+function canOverlapLiveGold(strategy) {
+  return ACCOUNT_PROFILE === 'live' && strategy.allowLiveGoldOverlap === true
+}
+
+function hasBlockingLiveExposure({ strategy, pendingOrders, openTrades }) {
+  if (ACCOUNT_PROFILE !== 'live') return false
+  const pendingGold = pendingOrders.some((order) => order.instrument === INSTRUMENT.symbol)
+  const openGold = hasOpenLiveGold(openTrades)
+  return pendingGold || (openGold && !canOverlapLiveGold(strategy))
+}
+
+async function placeLimitOrder({ strategy, direction, units, entry, stop, target, gtdTime, clientId, riskPct }) {
   const body = {
     order: {
       type: 'LIMIT',
@@ -292,7 +312,7 @@ async function placeLimitOrder({ strategy, direction, units, entry, stop, target
       clientExtensions: {
         id: clientId,
         tag: TAG,
-        comment: `${strategy.label} ${profile.label} 50pct risk`,
+        comment: `${strategy.label} ${profile.label} ${Math.round(riskPct * 100)}pct risk`,
       },
     },
   }
@@ -524,7 +544,7 @@ function detectSignal({ strategy, m15, h4, dxy }) {
   }
 }
 
-async function executeSignal({ strategy, signal, today, pendingOrders }) {
+async function executeSignal({ strategy, signal, today, pendingOrders, openTrades }) {
   const clientId = `${TAG}_${strategy.id}_${today.replaceAll('-', '')}_${signal.direction.toUpperCase()}`
   const existing = pendingOrders.some((order) => order.clientExtensions?.id === clientId)
   if (existing) {
@@ -533,7 +553,8 @@ async function executeSignal({ strategy, signal, today, pendingOrders }) {
   }
 
   const sizing = await fetchSizingContext()
-  const riskBudget = sizing.nav * RISK_PCT
+  const riskPct = strategyRiskPct(strategy, openTrades)
+  const riskBudget = sizing.nav * riskPct
   const riskUnits = riskBudget / (strategy.stop * sizing.usdToGbp)
   const marginUnits = (sizing.marginAvailable * MARGIN_BUFFER_PCT) / (signal.entry * sizing.usdToGbp * sizing.marginRate)
   const units = floorUnits(Math.min(riskUnits, marginUnits), sizing.tradeUnitsPrecision)
@@ -546,7 +567,7 @@ async function executeSignal({ strategy, signal, today, pendingOrders }) {
     `${strategy.id} ${signal.direction.toUpperCase()} limit @ ${signal.entry.toFixed(INSTRUMENT.priceDp)} ` +
     `SL ${signal.stop.toFixed(INSTRUMENT.priceDp)} TP ${signal.target.toFixed(INSTRUMENT.priceDp)} ` +
     `range ${signal.range.toFixed(INSTRUMENT.priceDp)} H4 ${signal.h4Trend} DXY ${signal.dxyBias} ` +
-    `NAV ${sizing.nav.toFixed(2)} risk ${riskBudget.toFixed(2)} units ${units.toFixed(1)} ` +
+    `NAV ${sizing.nav.toFixed(2)} riskPct ${(riskPct * 100).toFixed(0)}% risk ${riskBudget.toFixed(2)} units ${units.toFixed(1)} ` +
     `riskUnits ${riskUnits.toFixed(1)} marginUnits ${marginUnits.toFixed(1)} expires ${signal.gtdTime.toISOString()}`,
   )
 
@@ -564,6 +585,7 @@ async function executeSignal({ strategy, signal, today, pendingOrders }) {
     target: signal.target,
     gtdTime: signal.gtdTime,
     clientId,
+    riskPct,
   })
   const order = response.orderCreateTransaction
   log(`${strategy.id}: ${profile.label.toUpperCase()} ORDER CREATED ${order?.id ?? '?'} (${clientId}).`)
@@ -596,12 +618,12 @@ async function scan() {
       statusLines.push(`${strategy.id}: already handled today (${todayState[strategy.id].clientId}).`)
       continue
     }
-    if (hasLiveExposure({ pendingOrders, openTrades })) {
+    if (hasBlockingLiveExposure({ strategy, pendingOrders, openTrades })) {
       statusLines.push(`${strategy.id}: skipped; live ${INSTRUMENT.symbol} exposure already open or pending.`)
       continue
     }
 
-    const result = await executeSignal({ strategy, signal: detected.signal, today: detected.today, pendingOrders })
+    const result = await executeSignal({ strategy, signal: detected.signal, today: detected.today, pendingOrders, openTrades })
     if (!result.dryRun) {
       state[detected.today] = {
         ...(state[detected.today] ?? {}),
