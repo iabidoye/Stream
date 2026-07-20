@@ -1,0 +1,38 @@
+{
+  "name": "fvg-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3002",
+    "build": "next build",
+    "start": "next start -p 3002",
+    "start:railway": "next start -p ${PORT:-3002}",
+    "eightam:demo:dry": "node scripts/eightam-ny-optimised-live.mjs --account=demo --once",
+    "eightam:demo:trade": "node scripts/eightam-ny-optimised-live.mjs --account=demo --trade",
+    "eightam:live:dry": "node scripts/eightam-ny-optimised-live.mjs --account=live --once",
+    "eightam:live:trade": "node scripts/eightam-ny-optimised-live.mjs --account=live --trade",
+    "gold100:demo:dry": "node scripts/gold-100pct-paper-demo.mjs --account=demo --once",
+    "gold100:demo:trade": "node scripts/gold-100pct-paper-demo.mjs --account=demo --trade",
+    "gold100:live:dry": "node scripts/gold-100pct-paper-demo.mjs --account=live --once",
+    "gold100:live:trade": "node scripts/gold-100pct-paper-demo.mjs --account=live --trade",
+    "goldscalp:demo:dry": "node scripts/gold-scalp-paper-demo.mjs --once",
+    "goldscalp:demo:trade": "node scripts/gold-scalp-paper-demo.mjs --trade"
+  },
+  "dependencies": {
+    "lightweight-charts": "^4.2.0",
+    "lucide-react": "^0.468.0",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.0"
+  }
+}

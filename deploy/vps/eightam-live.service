@@ -1,0 +1,21 @@
+[Unit]
+Description=FVG 8AM NY Optimised Live Trading Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=fvgbot
+Group=fvgbot
+WorkingDirectory=/opt/fvg-scanner
+EnvironmentFile=/etc/fvg-scanner/eightam-live.env
+ExecStart=/usr/bin/env npm run eightam:live:trade
+Restart=always
+RestartSec=20
+KillSignal=SIGINT
+TimeoutStopSec=30
+StandardOutput=append:/var/log/fvg-scanner/eightam-live.out.log
+StandardError=append:/var/log/fvg-scanner/eightam-live.err.log
+
+[Install]
+WantedBy=multi-user.target

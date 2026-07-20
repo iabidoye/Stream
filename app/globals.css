@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 15% 4%;
+    --foreground: 210 18% 98%;
+    --card: 222 14% 7%;
+    --border: 222 10% 14%;
+    --muted: 222 12% 10%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 222 12% 13%;
+    --primary: 42 96% 60%;
+    --bull: 152 64% 50%;
+    --bear: 358 78% 62%;
+    --gold: 42 96% 60%;
+    --radius: 0.75rem;
+  }
+
+  * { border-color: hsl(var(--border)); }
+
+  html, body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    letter-spacing: -0.005em;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse at 10% -5%, hsl(42 96% 60% / 0.04), transparent 50%),
+      radial-gradient(ellipse at 90% 10%, hsl(220 80% 60% / 0.02), transparent 55%);
+    background-attachment: fixed;
+  }
+}
+
+@layer utilities {
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { scrollbar-width: none; }
+
+  .glass {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.8) 0%, hsl(var(--background) / 0.8) 100%);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  }
+
+  .card-elevated {
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.04) inset,
+      0 1px 2px hsl(0 0% 0% / 0.4),
+      0 8px 24px -8px hsl(0 0% 0% / 0.5);
+  }
+
+  .text-bull { color: hsl(var(--bull)); }
+  .text-bear { color: hsl(var(--bear)); }
+  .text-gold { color: hsl(var(--gold)); }
+
+  .gradient-text {
+    background: linear-gradient(135deg, hsl(42 96% 72%) 0%, hsl(42 96% 58%) 50%, hsl(28 94% 54%) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .signal-trap {
+    background: hsl(358 78% 62% / 0.08);
+    border-color: hsl(358 78% 62% / 0.25);
+  }
+  .signal-cont {
+    background: hsl(152 64% 50% / 0.08);
+    border-color: hsl(152 64% 50% / 0.25);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

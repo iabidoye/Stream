@@ -1,0 +1,191 @@
+//@version=5
+indicator("OR Volume Profile — XAUUSD Strategy", overlay=true,
+          max_lines_count=500, max_boxes_count=200, max_labels_count=500)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+i_session  = input.session("0800-0815:23456", "Opening Range Session (Exchange TZ)",
+             tooltip="15-min OR window. Default 08:00–08:15 NY. Adjust to your broker's open. Format HHMM-HHMM.")
+i_va_pct   = input.float(70.0, "Value Area %", minval=50, maxval=100, step=5,
+             tooltip="% of OR volume that defines Value Area. Classic = 70%.")
+i_extend   = input.bool(true,  "Extend VAH/VAL/POC Lines")
+i_show_sig = input.bool(true,  "Show Trade Signals")
+i_show_box = input.bool(true,  "Show OR + Value Area Boxes")
+
+c_or    = input.color(color.new(color.blue,   82), "OR Box")
+c_va    = input.color(color.new(color.yellow, 82), "Value Area Box")
+c_vah   = input.color(color.red,                   "VAH Line")
+c_val   = input.color(color.lime,                  "VAL Line")
+c_poc   = input.color(color.orange,                "POC Line")
+c_trap  = input.color(color.red,                   "Trap / Short Signal")
+c_cont  = input.color(color.lime,                  "Continuation / Long Signal")
+
+// ─── SESSION DETECTION ────────────────────────────────────────────────────────
+in_or      = not na(time(timeframe.period, i_session))
+or_started = in_or and not in_or[1]
+or_ended   = not in_or and in_or[1]
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+var float[] _mids   = array.new_float()
+var float[] _vols   = array.new_float()
+var int     _or_bar = na
+
+var float _or_hi = na
+var float _or_lo = na
+var float _vah   = na
+var float _val   = na
+var float _poc   = na
+var bool  _ready = false
+
+var line _vah_line = na
+var line _val_line = na
+var line _poc_line = na
+var box  _or_box   = na
+var box  _va_box   = na
+
+// ─── RESET ON NEW SESSION ─────────────────────────────────────────────────────
+if or_started
+    array.clear(_mids)
+    array.clear(_vols)
+    _or_bar := bar_index
+    _or_hi  := na
+    _or_lo  := na
+    _vah    := na
+    _val    := na
+    _poc    := na
+    _ready  := false
+
+// ─── ACCUMULATE DURING OR ─────────────────────────────────────────────────────
+if in_or
+    array.push(_mids, (high + low) / 2.0)
+    array.push(_vols, math.max(volume, 1.0))   // guard zero-volume bars
+    _or_hi := na(_or_hi) ? high : math.max(_or_hi, high)
+    _or_lo := na(_or_lo) ? low  : math.min(_or_lo, low)
+
+// ─── COMPUTE VALUE AREA WHEN OR ENDS ─────────────────────────────────────────
+if or_ended and not _ready and array.size(_vols) > 0
+    _ready := true
+    n      = array.size(_vols)
+    total  = array.sum(_vols)
+    target = total * (i_va_pct / 100.0)
+
+    // Point of Control = bar with highest volume
+    max_v  = array.max(_vols)
+    poc_i  = array.indexof(_vols, max_v)
+    _poc  := array.get(_mids, poc_i)
+
+    // Insertion sort: descending by volume (n ≤ 15 bars, negligible cost)
+    float[] sv = array.copy(_vols)
+    float[] sm = array.copy(_mids)
+    for i = 1 to n - 1
+        key_v = array.get(sv, i)
+        key_m = array.get(sm, i)
+        j     = i - 1
+        while j >= 0 and array.get(sv, j) < key_v
+            array.set(sv, j + 1, array.get(sv, j))
+            array.set(sm, j + 1, array.get(sm, j))
+            j -= 1
+        array.set(sv, j + 1, key_v)
+        array.set(sm, j + 1, key_m)
+
+    // Expand price range from POC until i_va_pct% of volume included
+    float cum  = 0.0
+    float va_h = _poc
+    float va_l = _poc
+    for i = 0 to n - 1
+        if cum >= target
+            break
+        cum  += array.get(sv, i)
+        p     = array.get(sm, i)
+        va_h := math.max(va_h, p)
+        va_l := math.min(va_l, p)
+
+    _vah := va_h
+    _val := va_l
+
+    // ── Draw ──────────────────────────────────────────────────────────────────
+    ext = i_extend ? extend.right : extend.none
+
+    if not na(_or_box),  box.delete(_or_box)
+    if not na(_va_box),  box.delete(_va_box)
+    if not na(_vah_line), line.delete(_vah_line)
+    if not na(_val_line), line.delete(_val_line)
+    if not na(_poc_line), line.delete(_poc_line)
+
+    if i_show_box
+        _or_box := box.new(_or_bar, _or_hi, bar_index, _or_lo,
+                           border_color=color.new(color.blue, 0), bgcolor=c_or,
+                           border_width=1, xloc=xloc.bar_index)
+        _va_box := box.new(_or_bar, _vah, bar_index, _val,
+                           border_color=color.new(color.yellow, 0), bgcolor=c_va,
+                           border_width=1, xloc=xloc.bar_index)
+
+    _vah_line := line.new(_or_bar, _vah, bar_index, _vah,
+                           color=c_vah, width=2, style=line.style_dashed, extend=ext)
+    _val_line := line.new(_or_bar, _val, bar_index, _val,
+                           color=c_val, width=2, style=line.style_dashed, extend=ext)
+    _poc_line := line.new(_or_bar, _poc, bar_index, _poc,
+                           color=c_poc, width=1, style=line.style_dotted, extend=ext)
+
+// ─── SIGNALS ─────────────────────────────────────────────────────────────────
+post_or = _ready and not in_or and not na(_vah) and not na(_val)
+
+// TRAP — wick above VAH, close back inside value area
+// Bears trapped bulls. Entry: short at close. Stop: above this candle's high. Target: VAL.
+trap = post_or and high > _vah and close < _vah and close > _val
+
+// ACCEPTANCE — market printing closes above VAH (accepting higher prices)
+// then pulls back and holds VAH. Entry: long at VAH touch. Trail stop below each candle low.
+prev_accepted = (not na(close[1]) and close[1] > _vah) or
+                (not na(close[2]) and close[2] > _vah)
+cont = post_or and prev_accepted and low <= _vah and close >= _vah and not trap
+
+if i_show_sig
+    if trap
+        label.new(bar_index, high + syminfo.mintick * 15,
+                  "TRAP ▼\nEntry:  " + str.tostring(close,  "#.00") +
+                  "\nStop:    " + str.tostring(high,   "#.00") +
+                  "\nTarget: " + str.tostring(_val,   "#.00"),
+                  style=label.style_label_down, color=c_trap,
+                  textcolor=color.white, size=size.small)
+
+    if cont
+        label.new(bar_index, low - syminfo.mintick * 15,
+                  "CONT ▲\nEntry:  " + str.tostring(close, "#.00") +
+                  "\nStop:    Trail each candle low" +
+                  "\nVAH:    " + str.tostring(_vah,  "#.00"),
+                  style=label.style_label_up, color=c_cont,
+                  textcolor=color.white, size=size.small)
+
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+alertcondition(trap, "TRAP Short — XAUUSD",
+               "XAU/USD Trap: wick above VAH, close inside. Short. Stop above candle high. Target VAL.")
+alertcondition(cont, "CONTINUATION Long — XAUUSD",
+               "XAU/USD Acceptance: market held above VAH, pulling back to level. Long. Trail stop.")
+
+// ─── INFO TABLE ───────────────────────────────────────────────────────────────
+if barstate.islast and _ready
+    var table t = table.new(position.top_right, 2, 7,
+                            bgcolor=color.new(color.black, 65),
+                            border_width=1, border_color=color.gray)
+    table.cell(t, 0, 0, "XAUUSD · OR VP", text_color=color.white, text_size=size.small,
+               bgcolor=color.new(color.navy, 40))
+    table.cell(t, 1, 0, "PRICE",          text_color=color.white, text_size=size.small,
+               bgcolor=color.new(color.navy, 40))
+    table.cell(t, 0, 1, "OR High",  text_color=color.blue,   text_size=size.small)
+    table.cell(t, 1, 1, str.tostring(na(_or_hi) ? 0.0 : _or_hi, "#.00"),
+               text_color=color.blue,   text_size=size.small)
+    table.cell(t, 0, 2, "VAH",      text_color=color.red,    text_size=size.small)
+    table.cell(t, 1, 2, str.tostring(na(_vah) ? 0.0 : _vah, "#.00"),
+               text_color=color.red,    text_size=size.small)
+    table.cell(t, 0, 3, "POC",      text_color=color.orange, text_size=size.small)
+    table.cell(t, 1, 3, str.tostring(na(_poc) ? 0.0 : _poc, "#.00"),
+               text_color=color.orange, text_size=size.small)
+    table.cell(t, 0, 4, "VAL",      text_color=color.lime,   text_size=size.small)
+    table.cell(t, 1, 4, str.tostring(na(_val) ? 0.0 : _val, "#.00"),
+               text_color=color.lime,   text_size=size.small)
+    table.cell(t, 0, 5, "OR Low",   text_color=color.blue,   text_size=size.small)
+    table.cell(t, 1, 5, str.tostring(na(_or_lo) ? 0.0 : _or_lo, "#.00"),
+               text_color=color.blue,   text_size=size.small)
+    table.cell(t, 0, 6, "VA %",     text_color=color.gray,   text_size=size.small)
+    table.cell(t, 1, 6, str.tostring(i_va_pct, "#") + "%",
+               text_color=color.gray,   text_size=size.small)

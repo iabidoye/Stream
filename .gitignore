@@ -1,0 +1,14 @@
+.vercel
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.next
+node_modules
+logs
+outputs
+tsconfig.tsbuildinfo
+*.log
+scripts/.*-state.json
+scripts/*.pid
