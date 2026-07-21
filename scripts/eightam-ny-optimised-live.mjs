@@ -25,6 +25,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..')
 
 const RISK_PCT = 0.50
+const LIVE_OVERLAP_RISK_PCT = 0.20
+const MAX_LIVE_BOT_TRADES = 2
 const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const ENTRY_CUTOFF_MIN = 12 * 60
@@ -33,6 +35,7 @@ const INSTRUMENTS = [
   { symbol: 'XAU_USD', label: 'Gold', priceDp: 3, stop: 40, target: 12, maxRange: 15 },
   { symbol: 'XAG_USD', label: 'Silver', priceDp: 3, stop: 0.40, target: 0.12, maxRange: 0.15 },
 ]
+const ENTRY_ORDER_TYPES = new Set(['LIMIT', 'STOP', 'MARKET_IF_TOUCHED'])
 
 const DXY_INSTRUMENTS = ['EUR_USD', 'USD_JPY', 'GBP_USD', 'USD_CAD', 'USD_SEK', 'USD_CHF']
 const DXY_WEIGHTS = {
@@ -204,14 +207,36 @@ async function fetchOpenTrades() {
   return data.trades ?? []
 }
 
-function hasLiveExposure({ instrument, pendingOrders, openTrades }) {
-  if (ACCOUNT_PROFILE !== 'live') return false
-  const pendingInstrument = pendingOrders.some((order) => order.instrument === instrument.symbol)
-  const openInstrument = openTrades.some((trade) => trade.instrument === instrument.symbol && Number(trade.currentUnits) !== 0)
-  return pendingInstrument || openInstrument
+function isBotInstrument(symbol) {
+  return INSTRUMENTS.some((instrument) => instrument.symbol === symbol)
 }
 
-async function placeLimitOrder({ instrument, direction, units, entry, stop, target, gtdTime, clientId }) {
+function countOpenLiveBotTrades(openTrades) {
+  if (ACCOUNT_PROFILE !== 'live') return 0
+  return openTrades.filter((trade) => (
+    isBotInstrument(trade.instrument) && Number(trade.currentUnits) !== 0
+  )).length
+}
+
+function hasPendingLiveBotEntry(pendingOrders) {
+  return ACCOUNT_PROFILE === 'live' && pendingOrders.some((order) => (
+    isBotInstrument(order.instrument) && ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
+  ))
+}
+
+function signalRiskPct(openTrades) {
+  return countOpenLiveBotTrades(openTrades) === 1 ? LIVE_OVERLAP_RISK_PCT : RISK_PCT
+}
+
+function liveExposureBlockReason({ pendingOrders, openTrades }) {
+  if (ACCOUNT_PROFILE !== 'live') return null
+  if (hasPendingLiveBotEntry(pendingOrders)) return 'live bot entry order already pending'
+  const openTradesCount = countOpenLiveBotTrades(openTrades)
+  if (openTradesCount >= MAX_LIVE_BOT_TRADES) return `${openTradesCount} live bot trades already open`
+  return null
+}
+
+async function placeLimitOrder({ instrument, direction, units, entry, stop, target, gtdTime, clientId, riskPct }) {
   const body = {
     order: {
       type: 'LIMIT',
@@ -226,7 +251,7 @@ async function placeLimitOrder({ instrument, direction, units, entry, stop, targ
       clientExtensions: {
         id: clientId,
         tag: 'EIGHT_AM_NY_OPT',
-        comment: `${instrument.label} 8AM NY Optimised 50pct risk`,
+        comment: `${instrument.label} 8AM NY Optimised ${Math.round(riskPct * 100)}pct risk`,
       },
     },
   }
@@ -428,26 +453,28 @@ async function executeSignal({ instrument, signal, today, pendingOrders, openTra
     log(`${instrument.symbol} ${today}: pending order already exists (${clientId}).`)
     return { placed: false, existing: true, clientId }
   }
-  if (hasLiveExposure({ instrument, pendingOrders, openTrades })) {
-    log(`${instrument.symbol} ${today}: SKIP, live ${instrument.symbol} exposure already open or pending.`)
+  const liveBlockReason = liveExposureBlockReason({ pendingOrders, openTrades })
+  if (liveBlockReason) {
+    log(`${instrument.symbol} ${today}: SKIP, ${liveBlockReason}.`)
     return { placed: false, blockedByExposure: true, clientId }
   }
 
   const sizing = await fetchSizingContext(instrument)
-  const riskBudget = sizing.nav * RISK_PCT
+  const riskPct = signalRiskPct(openTrades)
+  const riskBudget = sizing.nav * riskPct
   const riskUnits = riskBudget / (instrument.stop * sizing.usdToGbp)
   const marginUnits = (sizing.marginAvailable * MARGIN_BUFFER_PCT) / (signal.entry * sizing.usdToGbp * sizing.marginRate)
   const units = floorUnits(Math.min(riskUnits, marginUnits), sizing.tradeUnitsPrecision)
   if (units < sizing.minimumTradeSize) {
     log(`${instrument.symbol} ${today}: SKIP, risk budget ${riskBudget.toFixed(2)} sizes below 1 unit.`)
-    return { placed: false, clientId }
+    return { placed: false, skipped: true, clientId }
   }
 
   log(
     `${instrument.symbol} ${signal.direction.toUpperCase()} limit @ ${signal.entry.toFixed(instrument.priceDp)} ` +
     `SL ${signal.stop.toFixed(instrument.priceDp)} TP ${signal.target.toFixed(instrument.priceDp)} ` +
     `range ${signal.range.toFixed(instrument.priceDp)} H4 ${signal.h4Trend} DXY ${signal.dxyBias} ` +
-    `NAV ${sizing.nav.toFixed(2)} risk ${riskBudget.toFixed(2)} units ${units} ` +
+    `NAV ${sizing.nav.toFixed(2)} riskPct ${(riskPct * 100).toFixed(0)}% risk ${riskBudget.toFixed(2)} units ${units} ` +
     `riskUnits ${riskUnits.toFixed(1)} marginUnits ${marginUnits.toFixed(1)} expires ${signal.gtdTime.toISOString()}`,
   )
 
@@ -465,6 +492,7 @@ async function executeSignal({ instrument, signal, today, pendingOrders, openTra
     target: signal.target,
     gtdTime: signal.gtdTime,
     clientId,
+    riskPct,
   })
   const order = response.orderCreateTransaction
   log(`${instrument.symbol}: ORDER CREATED ${order?.id ?? '?'} (${clientId}).`)
@@ -510,7 +538,7 @@ async function scan() {
     }
 
     const result = await executeSignal({ instrument, signal: detected.signal, today: detected.today, pendingOrders, openTrades })
-    if (!result.dryRun && !result.blockedByExposure) {
+    if (!result.dryRun && !result.blockedByExposure && !result.skipped) {
       state[detected.today] = {
         ...(state[detected.today] ?? {}),
         [key]: {
@@ -526,7 +554,7 @@ async function scan() {
       }
       saveState(state)
     }
-    statusLines.push(`${instrument.symbol}: ${result.blockedByExposure ? 'blocked by existing live exposure' : result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
+    statusLines.push(`${instrument.symbol}: ${result.blockedByExposure ? 'blocked by existing live exposure' : result.skipped ? 'skipped' : result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
   }
 
   const status = statusLines.join(' | ')
@@ -538,7 +566,7 @@ async function scan() {
 
 log(
   `8AM NY Optimised trader starting - ${INSTRUMENTS.map((instrument) => instrument.symbol).join(', ')} ` +
-  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}%/signal` +
+  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}% first trade, ${LIVE_OVERLAP_RISK_PCT * 100}% second live trade` +
   (DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`),
 )
 

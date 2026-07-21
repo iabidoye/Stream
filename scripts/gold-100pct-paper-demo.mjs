@@ -12,12 +12,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..')
 
 const RISK_PCT = 0.50
+const LIVE_OVERLAP_RISK_PCT = 0.20
+const MAX_LIVE_GOLD_TRADES = 2
 const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const DECISION_SETTLE_MS = 2 * 60 * 1000
 const INSTRUMENT = { symbol: 'XAU_USD', label: 'Gold', priceDp: 3 }
 const TAG = 'GOLD_100_PAPER'
 const ASIAN_STRATEGY_ID = 'ASIA_0000_0100_B_SL60_TP6_R20'
+const ENTRY_ORDER_TYPES = new Set(['LIMIT', 'STOP', 'MARKET_IF_TOUCHED'])
 
 const STRATEGIES = [
   {
@@ -53,8 +56,6 @@ const STRATEGIES = [
     h4: 'none',
     dxy: 'notBlock',
     bounce: false,
-    liveOverlapRiskPct: 0.20,
-    allowLiveGoldOverlap: true,
   },
   {
     id: 'LONDON_1000_1130_M_SL60_TP8_R8',
@@ -273,28 +274,29 @@ async function fetchOpenTrades() {
   return data.trades ?? []
 }
 
-function hasOpenLiveGold(openTrades) {
-  return ACCOUNT_PROFILE === 'live' && openTrades.some((trade) => (
+function countOpenLiveGold(openTrades) {
+  if (ACCOUNT_PROFILE !== 'live') return 0
+  return openTrades.filter((trade) => (
     trade.instrument === INSTRUMENT.symbol && Number(trade.currentUnits) !== 0
+  )).length
+}
+
+function hasPendingLiveGoldEntry(pendingOrders) {
+  return ACCOUNT_PROFILE === 'live' && pendingOrders.some((order) => (
+    order.instrument === INSTRUMENT.symbol && ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
   ))
 }
 
-function strategyRiskPct(strategy, openTrades) {
-  if (canOverlapLiveGold(strategy) && hasOpenLiveGold(openTrades) && Number.isFinite(strategy.liveOverlapRiskPct)) {
-    return strategy.liveOverlapRiskPct
-  }
-  return RISK_PCT
+function strategyRiskPct(openTrades) {
+  return countOpenLiveGold(openTrades) === 1 ? LIVE_OVERLAP_RISK_PCT : RISK_PCT
 }
 
-function canOverlapLiveGold(strategy) {
-  return ACCOUNT_PROFILE === 'live' && strategy.allowLiveGoldOverlap === true
-}
-
-function hasBlockingLiveExposure({ strategy, pendingOrders, openTrades }) {
+function liveExposureBlockReason({ pendingOrders, openTrades }) {
   if (ACCOUNT_PROFILE !== 'live') return false
-  const pendingGold = pendingOrders.some((order) => order.instrument === INSTRUMENT.symbol)
-  const openGold = hasOpenLiveGold(openTrades)
-  return pendingGold || (openGold && !canOverlapLiveGold(strategy))
+  if (hasPendingLiveGoldEntry(pendingOrders)) return 'live Gold entry order already pending'
+  const openGold = countOpenLiveGold(openTrades)
+  if (openGold >= MAX_LIVE_GOLD_TRADES) return `${openGold} live Gold trades already open`
+  return null
 }
 
 async function placeLimitOrder({ strategy, direction, units, entry, stop, target, gtdTime, clientId, riskPct }) {
@@ -553,14 +555,14 @@ async function executeSignal({ strategy, signal, today, pendingOrders, openTrade
   }
 
   const sizing = await fetchSizingContext()
-  const riskPct = strategyRiskPct(strategy, openTrades)
+  const riskPct = strategyRiskPct(openTrades)
   const riskBudget = sizing.nav * riskPct
   const riskUnits = riskBudget / (strategy.stop * sizing.usdToGbp)
   const marginUnits = (sizing.marginAvailable * MARGIN_BUFFER_PCT) / (signal.entry * sizing.usdToGbp * sizing.marginRate)
   const units = floorUnits(Math.min(riskUnits, marginUnits), sizing.tradeUnitsPrecision)
   if (units < sizing.minimumTradeSize) {
     log(`${strategy.id} ${today}: SKIP, risk budget ${riskBudget.toFixed(2)} sizes below 0.1 unit.`)
-    return { placed: false, clientId }
+    return { placed: false, skipped: true, clientId }
   }
 
   log(
@@ -618,13 +620,14 @@ async function scan() {
       statusLines.push(`${strategy.id}: already handled today (${todayState[strategy.id].clientId}).`)
       continue
     }
-    if (hasBlockingLiveExposure({ strategy, pendingOrders, openTrades })) {
-      statusLines.push(`${strategy.id}: skipped; live ${INSTRUMENT.symbol} exposure already open or pending.`)
+    const liveBlockReason = liveExposureBlockReason({ pendingOrders, openTrades })
+    if (liveBlockReason) {
+      statusLines.push(`${strategy.id}: skipped; ${liveBlockReason}.`)
       continue
     }
 
     const result = await executeSignal({ strategy, signal: detected.signal, today: detected.today, pendingOrders, openTrades })
-    if (!result.dryRun) {
+    if (!result.dryRun && !result.skipped) {
       state[detected.today] = {
         ...(state[detected.today] ?? {}),
         [strategy.id]: {
@@ -640,7 +643,7 @@ async function scan() {
       }
       saveState(state)
     }
-    statusLines.push(`${strategy.id}: ${result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
+    statusLines.push(`${strategy.id}: ${result.skipped ? 'skipped' : result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
   }
 
   const status = statusLines.join(' | ')
@@ -652,7 +655,8 @@ async function scan() {
 
 log(
   `Gold 100% runner starting - ${ACTIVE_STRATEGIES.length} strategies on OANDA ${profile.label} account ${ACCOUNT_ID} ` +
-  `risk ${RISK_PCT * 100}%/signal${DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`}`,
+  `risk ${RISK_PCT * 100}% first trade, ${LIVE_OVERLAP_RISK_PCT * 100}% second live trade` +
+  `${DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`}`,
 )
 
 if (ONCE) {
