@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..')
 
 const RISK_PCT = 0.50
-const MAX_LIVE_GOLD_TRADES = 1
+const MAX_LIVE_ACCOUNT_TRADES = 1
 const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const DECISION_SETTLE_MS = 2 * 60 * 1000
@@ -277,16 +277,16 @@ async function fetchOpenTrades() {
   return data.trades ?? []
 }
 
-function countOpenLiveGold(openTrades) {
+function countOpenLiveAccountTrades(openTrades) {
   if (ACCOUNT_PROFILE !== 'live') return 0
   return openTrades.filter((trade) => (
-    trade.instrument === INSTRUMENT.symbol && Number(trade.currentUnits) !== 0
+    Number(trade.currentUnits) !== 0
   )).length
 }
 
-function hasPendingLiveGoldEntry(pendingOrders) {
+function hasPendingLiveAccountEntry(pendingOrders) {
   return ACCOUNT_PROFILE === 'live' && pendingOrders.some((order) => (
-    order.instrument === INSTRUMENT.symbol && ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
+    ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
   ))
 }
 
@@ -296,9 +296,9 @@ function strategyRiskPct(openTrades) {
 
 function liveExposureBlockReason({ pendingOrders, openTrades }) {
   if (ACCOUNT_PROFILE !== 'live') return false
-  if (hasPendingLiveGoldEntry(pendingOrders)) return 'live Gold entry order already pending'
-  const openGold = countOpenLiveGold(openTrades)
-  if (openGold >= MAX_LIVE_GOLD_TRADES) return `${openGold} live Gold trades already open`
+  if (hasPendingLiveAccountEntry(pendingOrders)) return 'live account entry order already pending'
+  const openTradesCount = countOpenLiveAccountTrades(openTrades)
+  if (openTradesCount >= MAX_LIVE_ACCOUNT_TRADES) return `${openTradesCount} live account trade already open`
   return null
 }
 
@@ -746,7 +746,7 @@ async function scan() {
 
 log(
   `Gold 100% runner starting - ${ACTIVE_STRATEGIES.length} strategies on OANDA ${profile.label} account ${ACCOUNT_ID} ` +
-  `risk ${RISK_PCT * 100}% with one live Gold trade maximum` +
+  `risk ${RISK_PCT * 100}% with one live account trade maximum` +
   `${DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`}`,
 )
 

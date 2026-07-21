@@ -210,16 +210,16 @@ function isBotInstrument(symbol) {
   return INSTRUMENTS.some((instrument) => instrument.symbol === symbol)
 }
 
-function countOpenLiveBotTrades(openTrades) {
+function countOpenLiveAccountTrades(openTrades) {
   if (ACCOUNT_PROFILE !== 'live') return 0
   return openTrades.filter((trade) => (
-    isBotInstrument(trade.instrument) && Number(trade.currentUnits) !== 0
+    Number(trade.currentUnits) !== 0
   )).length
 }
 
-function hasPendingLiveBotEntry(pendingOrders) {
+function hasPendingLiveAccountEntry(pendingOrders) {
   return ACCOUNT_PROFILE === 'live' && pendingOrders.some((order) => (
-    isBotInstrument(order.instrument) && ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
+    ENTRY_ORDER_TYPES.has(order.type) && !order.tradeID
   ))
 }
 
@@ -229,9 +229,9 @@ function signalRiskPct(openTrades) {
 
 function liveExposureBlockReason({ pendingOrders, openTrades }) {
   if (ACCOUNT_PROFILE !== 'live') return null
-  if (hasPendingLiveBotEntry(pendingOrders)) return 'live bot entry order already pending'
-  const openTradesCount = countOpenLiveBotTrades(openTrades)
-  if (openTradesCount >= MAX_LIVE_BOT_TRADES) return `${openTradesCount} live bot trades already open`
+  if (hasPendingLiveAccountEntry(pendingOrders)) return 'live account entry order already pending'
+  const openTradesCount = countOpenLiveAccountTrades(openTrades)
+  if (openTradesCount >= MAX_LIVE_BOT_TRADES) return `${openTradesCount} live account trade already open`
   return null
 }
 
@@ -578,7 +578,7 @@ async function scan() {
 
 log(
   `8AM NY Optimised trader starting - ${INSTRUMENTS.map((instrument) => instrument.symbol).join(', ')} ` +
-  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}% with one live bot trade maximum` +
+  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}% with one live account trade maximum` +
   (DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`),
 )
 
