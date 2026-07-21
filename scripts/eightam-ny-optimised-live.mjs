@@ -25,8 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..')
 
 const RISK_PCT = 0.50
-const LIVE_OVERLAP_RISK_PCT = 0.20
-const MAX_LIVE_BOT_TRADES = 2
+const MAX_LIVE_BOT_TRADES = 1
 const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const ENTRY_CUTOFF_MIN = 12 * 60
@@ -225,7 +224,7 @@ function hasPendingLiveBotEntry(pendingOrders) {
 }
 
 function signalRiskPct(openTrades) {
-  return countOpenLiveBotTrades(openTrades) === 1 ? LIVE_OVERLAP_RISK_PCT : RISK_PCT
+  return RISK_PCT
 }
 
 function liveExposureBlockReason({ pendingOrders, openTrades }) {
@@ -579,7 +578,7 @@ async function scan() {
 
 log(
   `8AM NY Optimised trader starting - ${INSTRUMENTS.map((instrument) => instrument.symbol).join(', ')} ` +
-  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}% first trade, ${LIVE_OVERLAP_RISK_PCT * 100}% second live trade` +
+  `on OANDA ${profile.label} account ${ACCOUNT_ID} - risk ${RISK_PCT * 100}% with one live bot trade maximum` +
   (DRY ? ' - DRY RUN' : ` - ${profile.label.toUpperCase()} ORDERS ENABLED`),
 )
 

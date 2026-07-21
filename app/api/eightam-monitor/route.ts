@@ -21,6 +21,7 @@ const configuredSessionOrder = new Map([
   ['LONDON_1000_1130_M_SL60_TP8_R8', 10],
   ['ASIA_0000_0100_B_SL60_TP6_R20', 20],
   ['EIGHT_AM_NY_OPT', 30],
+  ['GOLD_100_NY_UTC_COMBINED', 40],
   ['UTC_1200_1330_B_SL60_TP12_R15', 40],
   ['NY_0800_0930_B_SL60_TP12_R20', 50],
   ['SCALP_LONDON_0800_R1_M_SL10_TP2_H1MATCH', 110],
@@ -606,6 +607,108 @@ function transactionHandledToday(transactions: any[], dayKey: string, strategyId
   })
 }
 
+function displayToneRank(tone: 'green' | 'gold' | 'blue' | 'muted') {
+  return { green: 4, gold: 3, blue: 2, muted: 1 }[tone]
+}
+
+function displayPhaseRank(phase: string) {
+  if (phase === 'Trade open') return 7
+  if (phase === 'Order pending') return 6
+  if (phase === 'Handled today') return 5
+  if (phase === 'Entry window') return 4
+  if (phase === 'Decision candle forming') return 3
+  if (phase === 'Waiting confirmation' || phase === 'Range candle forming') return 2
+  if (phase === 'Pre-session build-up' || phase === 'Session open') return 1
+  return 0
+}
+
+function mergeEquivalentGoldWindows<T extends {
+  id: string
+  family: string
+  label: string
+  session: string
+  group: string
+  groupOrder: number
+  instruments: string[]
+  setup: string
+  setupPct: number
+  phase: string
+  detail: string
+  atPlay: boolean
+  sessionActive: boolean
+  nextRangeMinutes: number
+  tone: 'green' | 'gold' | 'blue' | 'muted'
+  risk: string
+  window: {
+    range: string
+    decision: string
+    cutoff: string
+    utcRange: string
+    utcDecision: string
+    utcCutoff: string
+  }
+}>(rows: T[]): T[] {
+  const mergeIds = new Set(['UTC_1200_1330_B_SL60_TP12_R15', 'NY_0800_0930_B_SL60_TP12_R20'])
+  const out: T[] = []
+  const buckets = new Map<string, T[]>()
+
+  for (const row of rows) {
+    if (!mergeIds.has(row.id)) {
+      out.push(row)
+      continue
+    }
+    const key = [
+      row.family,
+      row.instruments.join(','),
+      row.window.utcRange,
+      row.window.utcDecision,
+      row.window.utcCutoff,
+    ].join('|')
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key)!.push(row)
+  }
+
+  for (const bucket of buckets.values()) {
+    if (bucket.length === 1) {
+      out.push(bucket[0])
+      continue
+    }
+
+    const primary = [...bucket].sort((a, b) => (
+      displayPhaseRank(b.phase) - displayPhaseRank(a.phase)
+      || b.setupPct - a.setupPct
+      || displayToneRank(b.tone) - displayToneRank(a.tone)
+      || (a.id === 'NY_0800_0930_B_SL60_TP12_R20' ? -1 : 1)
+    ))[0]
+    const ny = bucket.find((row) => row.id === 'NY_0800_0930_B_SL60_TP12_R20')
+    const utc = bucket.find((row) => row.id === 'UTC_1200_1330_B_SL60_TP12_R15')
+    const tone = [...bucket].sort((a, b) => displayToneRank(b.tone) - displayToneRank(a.tone))[0].tone
+    const phase = [...bucket].sort((a, b) => displayPhaseRank(b.phase) - displayPhaseRank(a.phase))[0].phase
+
+    out.push({
+      ...primary,
+      id: 'GOLD_100_NY_UTC_COMBINED',
+      label: `${ny?.label ?? 'New York 08:00->09:30'} / ${utc?.label ?? 'UTC 12:00->13:30'}`,
+      session: 'New York / UTC equivalent',
+      group: 'New York',
+      groupOrder: 2,
+      setup: `${ny?.setup ?? primary.setup}; duplicate UTC equivalent is joined and deduped before order placement`,
+      setupPct: Math.max(...bucket.map((row) => row.setupPct)),
+      phase,
+      detail: phase === 'Handled today'
+        ? 'Equivalent UTC and New York window handled as one trade opportunity'
+        : primary.detail,
+      atPlay: bucket.some((row) => row.atPlay),
+      sessionActive: bucket.some((row) => row.sessionActive),
+      nextRangeMinutes: Math.min(...bucket.map((row) => row.nextRangeMinutes)),
+      tone,
+      risk: '50% max; one live trade only',
+    })
+  }
+
+  return out
+}
+
 function buildStrategyStatus(
   profileKey: 'demo' | 'live',
   pendingOrders: ReturnType<typeof normalizeOrders>,
@@ -618,7 +721,7 @@ function buildStrategyStatus(
     ? monitoredStrategies.filter((strategy) => liveApprovedStrategyIds.has(strategy.id))
     : monitoredStrategies
 
-  return visibleStrategies.map((strategy) => {
+  const rows = visibleStrategies.map((strategy) => {
     const dayKey = localDayKey(now, strategy.timeZone)
     const currentMinute = localMinutes(now, strategy.timeZone)
     const decisionMinute = strategy.rangeStart + strategy.decisionDelay
@@ -733,7 +836,9 @@ function buildStrategyStatus(
         utcCutoff: utcHmForLocalMinute(now, strategy.timeZone, cutoffMinute),
       },
     }
-  }).sort((a, b) => (
+  })
+
+  return mergeEquivalentGoldWindows(rows).sort((a, b) => (
     (configuredSessionOrder.get(a.id) ?? 999) - (configuredSessionOrder.get(b.id) ?? 999)
     || a.groupOrder - b.groupOrder
     || a.nextRangeMinutes - b.nextRangeMinutes
