@@ -578,6 +578,19 @@ async function executeSignal({ strategy, signal, today, pendingOrders, openTrade
     return { placed: false, dryRun: true, clientId }
   }
 
+  const [latestPendingOrders, latestOpenTrades] = await Promise.all([
+    fetchPendingOrders(),
+    fetchOpenTrades(),
+  ])
+  const latestLiveBlockReason = liveExposureBlockReason({
+    pendingOrders: latestPendingOrders,
+    openTrades: latestOpenTrades,
+  })
+  if (latestLiveBlockReason) {
+    log(`${strategy.id} ${today}: SKIP before order placement, ${latestLiveBlockReason}.`)
+    return { placed: false, blockedByExposure: true, clientId }
+  }
+
   const response = await placeLimitOrder({
     strategy,
     direction: signal.direction,
@@ -627,7 +640,7 @@ async function scan() {
     }
 
     const result = await executeSignal({ strategy, signal: detected.signal, today: detected.today, pendingOrders, openTrades })
-    if (!result.dryRun && !result.skipped) {
+    if (!result.dryRun && !result.skipped && !result.blockedByExposure) {
       state[detected.today] = {
         ...(state[detected.today] ?? {}),
         [strategy.id]: {
@@ -643,7 +656,7 @@ async function scan() {
       }
       saveState(state)
     }
-    statusLines.push(`${strategy.id}: ${result.skipped ? 'skipped' : result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
+    statusLines.push(`${strategy.id}: ${result.blockedByExposure ? 'blocked by existing live exposure' : result.skipped ? 'skipped' : result.dryRun ? 'dry-run signal found' : 'signal handled'} (${result.clientId}).`)
   }
 
   const status = statusLines.join(' | ')

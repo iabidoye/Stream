@@ -483,6 +483,19 @@ async function executeSignal({ instrument, signal, today, pendingOrders, openTra
     return { placed: false, dryRun: true, clientId }
   }
 
+  const [latestPendingOrders, latestOpenTrades] = await Promise.all([
+    fetchPendingOrders(),
+    fetchOpenTrades(),
+  ])
+  const latestLiveBlockReason = liveExposureBlockReason({
+    pendingOrders: latestPendingOrders,
+    openTrades: latestOpenTrades,
+  })
+  if (latestLiveBlockReason) {
+    log(`${instrument.symbol} ${today}: SKIP before order placement, ${latestLiveBlockReason}.`)
+    return { placed: false, blockedByExposure: true, clientId }
+  }
+
   const response = await placeLimitOrder({
     instrument,
     direction: signal.direction,
