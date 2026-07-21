@@ -12,3 +12,4 @@ tsconfig.tsbuildinfo
 *.log
 scripts/.*-state.json
 scripts/*.pid
+.env*

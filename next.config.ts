@@ -10,5 +10,17 @@ for (const key of REQUIRED_ENV) {
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: process.cwd(),
+  async redirects() {
+    if (process.env.NEXT_PUBLIC_MONITOR_ONLY === "true") {
+      return [
+        {
+          source: "/",
+          destination: "/eightam-monitor",
+          permanent: false,
+        },
+      ];
+    }
+    return [];
+  },
 };
 export default nextConfig;
