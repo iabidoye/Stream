@@ -21,6 +21,10 @@ const INSTRUMENT = { symbol: 'XAU_USD', label: 'Gold', priceDp: 3 }
 const TAG = 'GOLD_100_PAPER'
 const ASIAN_STRATEGY_ID = 'ASIA_0000_0100_B_SL60_TP6_R20'
 const ENTRY_ORDER_TYPES = new Set(['LIMIT', 'STOP', 'MARKET_IF_TOUCHED'])
+const DUPLICATE_TIE_PRIORITY = new Map([
+  ['NY_0800_0930_B_SL60_TP12_R20', 1],
+  ['UTC_1200_1330_B_SL60_TP12_R15', 2],
+])
 
 const STRATEGIES = [
   {
@@ -383,6 +387,39 @@ function localDateTimeToUtc(day, hour, minute, timeZone) {
   return new Date(guess)
 }
 
+function localMinuteToUtc(day, minuteOfDay, timeZone) {
+  const [hour, minute] = minutesToHm(minuteOfDay).split(':').map(Number)
+  return localDateTimeToUtc(day, hour, minute, timeZone)
+}
+
+function duplicateWindowKey(strategy, today) {
+  const rangeStartUtc = localMinuteToUtc(today, strategy.rangeStart, strategy.timeZone)
+  const decisionUtc = localMinuteToUtc(today, strategy.rangeStart + strategy.decisionDelay, strategy.timeZone)
+  const cutoffUtc = localMinuteToUtc(today, strategy.rangeStart + strategy.entryCutoffDelay, strategy.timeZone)
+  return [
+    INSTRUMENT.symbol,
+    rangeStartUtc.toISOString(),
+    decisionUtc.toISOString(),
+    cutoffUtc.toISOString(),
+  ].join('|')
+}
+
+function signalProfitPoints(signal) {
+  return Math.abs(signal.target - signal.entry)
+}
+
+function chooseDuplicateWinner(candidates) {
+  return [...candidates].sort((a, b) => (
+    signalProfitPoints(b.detected.signal) - signalProfitPoints(a.detected.signal)
+    || (DUPLICATE_TIE_PRIORITY.get(a.strategy.id) ?? 99) - (DUPLICATE_TIE_PRIORITY.get(b.strategy.id) ?? 99)
+    || a.strategy.id.localeCompare(b.strategy.id)
+  ))[0]
+}
+
+function signalStatusLabel(row) {
+  return `${row.strategy.id} ${row.detected.signal.direction.toUpperCase()} ${signalProfitPoints(row.detected.signal).toFixed(3)}pt target`
+}
+
 function latestBefore(candles, time) {
   let lo = 0
   let hi = candles.length - 1
@@ -621,18 +658,60 @@ async function scan() {
   const h4 = addH4Trend(h4Raw)
   const state = loadState()
   const statusLines = []
+  const signalRows = []
 
   for (const strategy of ACTIVE_STRATEGIES) {
     const detected = detectSignal({ strategy, m15, h4, dxy })
-    const todayState = state[detected.today] ?? {}
     if (detected.status !== 'signal') {
       statusLines.push(`${strategy.id}: ${detected.reason}`)
       continue
     }
-    if (todayState[strategy.id]?.clientId) {
-      statusLines.push(`${strategy.id}: already handled today (${todayState[strategy.id].clientId}).`)
+    signalRows.push({
+      strategy,
+      detected,
+      windowKey: duplicateWindowKey(strategy, detected.today),
+      handled: state[detected.today]?.[strategy.id] ?? null,
+    })
+  }
+
+  const selectedRows = []
+  const byWindow = new Map()
+  for (const row of signalRows) {
+    if (!byWindow.has(row.windowKey)) byWindow.set(row.windowKey, [])
+    byWindow.get(row.windowKey).push(row)
+  }
+
+  for (const rows of byWindow.values()) {
+    const handledRow = rows.find((row) => row.handled?.clientId)
+    if (handledRow) {
+      for (const row of rows) {
+        statusLines.push(rows.length === 1
+          ? `${row.strategy.id}: already handled today (${handledRow.handled.clientId}).`
+          : `${row.strategy.id}: duplicate window already handled by ${handledRow.strategy.id} (${handledRow.handled.clientId}).`)
+      }
       continue
     }
+
+    const directions = new Set(rows.map((row) => row.detected.signal.direction))
+    if (rows.length > 1 && directions.size > 1) {
+      statusLines.push(`Duplicate window conflict: ${rows.map(signalStatusLabel).join(' vs ')}; no order placed.`)
+      continue
+    }
+
+    const winner = chooseDuplicateWinner(rows)
+    selectedRows.push(winner)
+    for (const row of rows) {
+      if (row === winner) continue
+      statusLines.push(
+        `${row.strategy.id}: duplicate window skipped; ${winner.strategy.id} selected ` +
+        `because both are ${winner.detected.signal.direction.toUpperCase()} and ` +
+        `${signalProfitPoints(winner.detected.signal).toFixed(3)}pt target >= ${signalProfitPoints(row.detected.signal).toFixed(3)}pt.`,
+      )
+    }
+  }
+
+  for (const row of selectedRows) {
+    const { strategy, detected } = row
     const liveBlockReason = liveExposureBlockReason({ pendingOrders, openTrades })
     if (liveBlockReason) {
       statusLines.push(`${strategy.id}: skipped; ${liveBlockReason}.`)
