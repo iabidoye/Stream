@@ -498,14 +498,17 @@ function hm(minutes: number) {
 }
 
 function localParts(date: Date, timeZone: string) {
-  return Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
     timeZone,
     hour: '2-digit',
     minute: '2-digit',
     day: '2-digit',
     month: 'short',
     hour12: false,
+    hourCycle: 'h23',
   }).formatToParts(date).map((part) => [part.type, part.value]))
+  parts.hour = String(Number(parts.hour) % 24).padStart(2, '0')
+  return parts
 }
 
 function localNumericParts(date: Date, timeZone: string) {
@@ -519,6 +522,7 @@ function localNumericParts(date: Date, timeZone: string) {
     hour12: false,
     hourCycle: 'h23',
   }).formatToParts(date).map((part) => [part.type, part.value]))
+  raw.hour = String(Number(raw.hour) % 24).padStart(2, '0')
   return {
     year: Number(raw.year),
     month: Number(raw.month),

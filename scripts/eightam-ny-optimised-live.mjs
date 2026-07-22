@@ -273,7 +273,7 @@ function ema(values, period) {
 }
 
 function nyParts(date) {
-  return Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     year: 'numeric',
     month: '2-digit',
@@ -281,8 +281,11 @@ function nyParts(date) {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+    hourCycle: 'h23',
     weekday: 'short',
   }).formatToParts(date).map((part) => [part.type, part.value]))
+  parts.hour = String(Number(parts.hour) % 24).padStart(2, '0')
+  return parts
 }
 
 function nyDayKey(date) {

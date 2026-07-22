@@ -224,8 +224,16 @@ async function api(pathname, opts = {}) {
   return json
 }
 
-async function fetchCandles(instrument, granularity, count) {
-  const data = await api(`/v3/instruments/${instrument}/candles?granularity=${granularity}&count=${count}&price=M`)
+function candlePath(instrument, granularity, params) {
+  const search = new URLSearchParams({
+    granularity,
+    price: 'M',
+    ...params,
+  })
+  return `/v3/instruments/${instrument}/candles?${search.toString()}`
+}
+
+function normalizeCandles(data) {
   return data.candles
     .filter((candle) => candle.complete)
     .map((candle) => ({
@@ -235,7 +243,72 @@ async function fetchCandles(instrument, granularity, count) {
       low: Number(candle.mid.l),
       close: Number(candle.mid.c),
     }))
-    .sort((a, b) => a.time - b.time)
+}
+
+function mergeCandles(...series) {
+  const byTime = new Map()
+  for (const candles of series) {
+    for (const candle of candles) byTime.set(candle.time.getTime(), candle)
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time)
+}
+
+async function fetchCandles(instrument, granularity, count) {
+  const data = await api(candlePath(instrument, granularity, { count: String(count) }))
+  return normalizeCandles(data).sort((a, b) => a.time - b.time)
+}
+
+async function fetchCandlesBetween(instrument, granularity, from, to = new Date()) {
+  const data = await api(candlePath(instrument, granularity, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  }))
+  return normalizeCandles(data).sort((a, b) => a.time - b.time)
+}
+
+async function fetchM15WithSessionWindow(instrument, count) {
+  const now = new Date()
+  const utcSessionFrom = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() - 1,
+    0,
+    0,
+    0,
+  ))
+  const [recent, sessionWindow] = await Promise.all([
+    fetchCandles(instrument, 'M15', count),
+    fetchCandlesBetween(instrument, 'M15', utcSessionFrom, now),
+  ])
+  return mergeCandles(recent, sessionWindow)
+}
+
+async function fetchH4WithTrendHistory(instrument, count) {
+  const now = new Date()
+  const from = new Date(now.getTime() - 70 * 24 * 60 * 60 * 1000)
+  const [recent, explicitWindow] = await Promise.all([
+    fetchCandles(instrument, 'H4', count),
+    fetchCandlesBetween(instrument, 'H4', from, now),
+  ])
+  return mergeCandles(recent, explicitWindow)
+}
+
+function assertRecentM15(candles, instrument) {
+  const last = candles.at(-1)
+  if (!last) throw new Error(`${instrument}: no completed M15 candles returned by OANDA.`)
+  const ageMinutes = (Date.now() - last.time.getTime()) / 60000
+  if (ageMinutes > 45) {
+    throw new Error(`${instrument}: stale M15 data, last completed candle ${last.time.toISOString()} (${ageMinutes.toFixed(0)}m old).`)
+  }
+}
+
+function normalizeHourPart(part) {
+  return String(Number(part) % 24).padStart(2, '0')
+}
+
+function normalizeDateParts(parts) {
+  if ('hour' in parts) parts.hour = normalizeHourPart(parts.hour)
+  return parts
 }
 
 async function fetchNAV() {
@@ -351,9 +424,10 @@ function partsFor(date, timeZone) {
       minute: '2-digit',
       weekday: 'short',
       hour12: false,
+      hourCycle: 'h23',
     }))
   }
-  return Object.fromEntries(formatterCache.get(timeZone).formatToParts(date).map((part) => [part.type, part.value]))
+  return normalizeDateParts(Object.fromEntries(formatterCache.get(timeZone).formatToParts(date).map((part) => [part.type, part.value])))
 }
 
 function localDayKey(date, timeZone) {
@@ -650,10 +724,13 @@ async function scan() {
   const [pendingOrders, openTrades, dxyLegs, m15, h4Raw] = await Promise.all([
     fetchPendingOrders(),
     fetchOpenTrades(),
-    Promise.all(DXY_INSTRUMENTS.map((instrument) => fetchCandles(instrument, 'M15', 500))),
-    fetchCandles(INSTRUMENT.symbol, 'M15', 700),
-    fetchCandles(INSTRUMENT.symbol, 'H4', 300),
+    Promise.all(DXY_INSTRUMENTS.map((instrument) => fetchM15WithSessionWindow(instrument, 500))),
+    fetchM15WithSessionWindow(INSTRUMENT.symbol, 700),
+    fetchH4WithTrendHistory(INSTRUMENT.symbol, 300),
   ])
+
+  assertRecentM15(m15, INSTRUMENT.symbol)
+  for (let i = 0; i < DXY_INSTRUMENTS.length; i += 1) assertRecentM15(dxyLegs[i], DXY_INSTRUMENTS[i])
 
   const dxy = makeDxy(Object.fromEntries(DXY_INSTRUMENTS.map((instrument, index) => [instrument, dxyLegs[index]])))
   const h4 = addH4Trend(h4Raw)
