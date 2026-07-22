@@ -16,6 +16,7 @@ const MAX_LIVE_ACCOUNT_TRADES = 1
 const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const DECISION_SETTLE_MS = 2 * 60 * 1000
+const OANDA_TIMEOUT_MS = 15_000
 const INSTRUMENT = { symbol: 'XAU_USD', label: 'Gold', priceDp: 3 }
 const TAG = 'GOLD_100_PAPER'
 const ASIAN_STRATEGY_ID = 'ASIA_0000_0100_B_SL60_TP6_R20'
@@ -209,6 +210,7 @@ function saveState(state) {
 async function api(pathname, opts = {}) {
   const res = await fetch(`${BASE}${pathname}`, {
     ...opts,
+    signal: opts.signal ?? AbortSignal.timeout(OANDA_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       'Content-Type': 'application/json',

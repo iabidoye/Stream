@@ -30,6 +30,7 @@ const MARGIN_BUFFER_PCT = 0.90
 const POLL_MS = 5_000
 const ENTRY_CUTOFF_MIN = 12 * 60
 const DECISION_SETTLE_MS = 2 * 60 * 1000
+const OANDA_TIMEOUT_MS = 15_000
 const INSTRUMENTS = [
   { symbol: 'XAU_USD', label: 'Gold', priceDp: 3, stop: 40, target: 12, maxRange: 15 },
   { symbol: 'XAG_USD', label: 'Silver', priceDp: 3, stop: 0.40, target: 0.12, maxRange: 0.15 },
@@ -138,6 +139,7 @@ function saveState(state) {
 async function api(pathname, opts = {}) {
   const res = await fetch(`${BASE}${pathname}`, {
     ...opts,
+    signal: opts.signal ?? AbortSignal.timeout(OANDA_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       'Content-Type': 'application/json',
